@@ -35,13 +35,13 @@ jobs:
         run: |
           powershell Compress-Archive `
           -Path ExportTelegramContacts/bin/Release/* `
-          -DestinationPath portable.zip
+          -DestinationPath ExportTelegramContacts-portable.zip
 
       - name: Create Release
         uses: softprops/action-gh-release@v3
         with:
           files: |
-            portable.zip
+            ExportTelegramContacts-portable.zip
             ExportTelegramContacts/bin/Release/*.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
