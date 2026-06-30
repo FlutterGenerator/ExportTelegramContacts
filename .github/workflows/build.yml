@@ -33,15 +33,16 @@ jobs:
 
       - name: Create ZIP
         run: |
+          $version = "${{ github.ref_name }}"
           powershell Compress-Archive `
           -Path ExportTelegramContacts/bin/Release/* `
-          -DestinationPath ExportTelegramContacts-portable.zip
+          -DestinationPath "ExportTelegramContacts-portable-$version.zip"
 
       - name: Create Release
         uses: softprops/action-gh-release@v3
         with:
           files: |
-            ExportTelegramContacts-portable.zip
+            ExportTelegramContacts-portable-${{ github.ref_name }}.zip
             ExportTelegramContacts/bin/Release/*.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
