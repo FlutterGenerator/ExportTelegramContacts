@@ -1,6 +1,15 @@
 # No longer maintained
 There are alternative apps in Mobile App Stores, this repo is no longer maintained, if you think I should countinue this for a good reason you can contact me, thanks.
 
+# Migration note
+This fork has been migrated from the abandoned **TLSharp** library to **[WTelegramClient](https://wiz0u.github.io/WTelegramClient/)**, and the project was converted from the old .NET Framework 4.7 / `packages.config` format to a modern SDK-style **.NET 8** project. Image resizing now uses `SixLabors.ImageSharp` instead of `System.Drawing` for cross-platform support. Usage (config keys, menu, vCard export) is unchanged.
+
+Build/run with the .NET SDK:
+```
+dotnet build
+dotnet run --project ExportTelegramContacts/ExportTelegramContacts.csproj
+```
+
 # ExportTelegramContacts
 Easily export Telegram contacts with profile images in **vCard** format
 

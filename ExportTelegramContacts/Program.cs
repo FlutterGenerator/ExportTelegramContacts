@@ -1,25 +1,22 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Configuration;
-using System.Drawing;
-using System.Drawing.Imaging;
 using System.IO;
 using System.Linq;
 using System.Reflection;
-using System.Text;
 using System.Threading.Tasks;
-using TeleSharp.TL;
-using TeleSharp.TL.Account;
-using TeleSharp.TL.Contacts;
-using TLSharp.Core;
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Formats.Jpeg;
+using SixLabors.ImageSharp.Processing;
+using TL;
+using WTelegram;
 
 namespace ExportTelegramContacts
 {
 	class Program
 	{
-		private static TelegramClient _client;
-		private static TLUser _user;
-
+		private static Client _client;
+		private static User _self;
+		private static string _phoneNumber;
 
 		public static int ApiId
 		{
@@ -38,26 +35,33 @@ namespace ExportTelegramContacts
 			Console.WriteLine("***************************");
 			Console.WriteLine($"Welcome to Telegram Contacts Exporter Version {Assembly.GetExecutingAssembly().GetName().Version}");
 			Console.WriteLine("***************************");
+
+			// WTelegramClient logs to console by default, only show warnings and above.
+			Helpers.Log = (lvl, str) => { if (lvl >= 3) Console.WriteLine(str); };
+
 			try
 			{
 				var apiId = ApiId;
 				var apiHash = ApiHash;
 
 				if (string.IsNullOrWhiteSpace(apiHash) ||
-				    apiHash.Contains("PLACEHOLDER") ||
-				    apiId <= 0)
+					apiHash.Contains("PLACEHOLDER") ||
+					apiId <= 0)
 				{
 					Console.WriteLine("The values for 'api_id' or 'api_hash' are NOT provided. Please enter these value in the '.config' file and try again.");
 					Console.ReadKey(intercept: true);
 					return;
 				}
 
-
 				Console.Write("Connecting to Telegram servers...");
-				_client = new TelegramClient(ApiId, ApiHash);
+				_client = new Client(Config);
 				var connect = _client.ConnectAsync();
 				connect.Wait();
 				Console.WriteLine("Connected");
+
+				// If a previous session is already authorized, pick it up.
+				if (_client.User != null)
+					_self = _client.User;
 			}
 			catch (Exception ex)
 			{
@@ -69,7 +73,7 @@ namespace ExportTelegramContacts
 
 			char? WriteMenu()
 			{
-				if (!_client.IsUserAuthorized())
+				if (!IsUserAuthorized())
 				{
 					Console.WriteLine("You are not authenticated, please authenticate first.");
 				}
@@ -91,6 +95,7 @@ namespace ExportTelegramContacts
 				switch (userInput)
 				{
 					case 'q':
+						_client?.Dispose();
 						return;
 
 					case '1':
@@ -110,11 +115,52 @@ namespace ExportTelegramContacts
 			}
 		}
 
+		private static bool IsUserAuthorized() => _client?.User != null;
+
+		/// <summary>
+		/// WTelegramClient configuration callback. It is called by the library whenever it
+		/// needs a piece of configuration (api_id/api_hash/phone number/codes/session path...).
+		/// </summary>
+		private static string Config(string what)
+		{
+			switch (what)
+			{
+				case "api_id": return ApiId.ToString();
+				case "api_hash": return ApiHash;
+				case "phone_number": return _phoneNumber ?? PromptFor("Please enter your mobile number (e.g: 14155552671): ");
+				case "verification_code": return PromptFor("Request is sent to your mobile or the telegram app associated with this number, please enter the code here: ");
+				case "password": return PromptFor("Please enter your 2FA password: ", hidden: true);
+				case "first_name": return "New"; // used only if registering a new account
+				case "last_name": return "User"; // used only if registering a new account
+				case "session_pathname": return "session.dat";
+				default: return null; // let WTelegramClient use default behaviour for other config requests
+			}
+		}
+
+		private static string PromptFor(string message, bool hidden = false)
+		{
+			Console.Write(message);
+			if (!hidden)
+				return Console.ReadLine();
+
+			var pwd = new System.Text.StringBuilder();
+			ConsoleKeyInfo key;
+			while ((key = Console.ReadKey(intercept: true)).Key != ConsoleKey.Enter)
+			{
+				if (key.Key == ConsoleKey.Backspace && pwd.Length > 0)
+					pwd.Remove(pwd.Length - 1, 1);
+				else if (!char.IsControl(key.KeyChar))
+					pwd.Append(key.KeyChar);
+			}
+			Console.WriteLine();
+			return pwd.ToString();
+		}
+
 		private static async Task CallExportContacts()
 		{
 			try
 			{
-				if (!_client.IsUserAuthorized())
+				if (!IsUserAuthorized())
 				{
 					Console.WriteLine("You are not authenticated, please authenticate first.");
 					return;
@@ -122,20 +168,20 @@ namespace ExportTelegramContacts
 
 				Console.WriteLine($"Reading contacts...");
 
-				var contacts = (await _client.GetContactsAsync()) as TLContacts;
+				var contacts = await _client.Contacts_GetContacts();
 
-				Console.WriteLine($"Number of contacts: {contacts.Users.Count}");
+				var usersList = contacts.users.Values.OfType<User>().ToList();
 
-				var fileName = $"ExportedContacts\\Exported-{DateTime.Now:yyyy-MM-dd HH-mm.ss}.vcf";
-				var fileNameWihContacts = $"ExportedContacts\\Exported-WithPhoto-{DateTime.Now:yyyy-MM-dd HH-mm.ss}.vcf";
+				Console.WriteLine($"Number of contacts: {usersList.Count}");
+
+				var fileName = $"ExportedContacts{Path.DirectorySeparatorChar}Exported-{DateTime.Now:yyyy-MM-dd HH-mm.ss}.vcf";
+				var fileNameWihContacts = $"ExportedContacts{Path.DirectorySeparatorChar}Exported-WithPhoto-{DateTime.Now:yyyy-MM-dd HH-mm.ss}.vcf";
 
 				Directory.CreateDirectory("ExportedContacts");
 
 				Console.Write($"Export contacts without phone? [y/n] ");
 				var filterResult = Console.ReadLine() ?? "";
 				var dontExport = !(filterResult == "" || filterResult.ToLower() == "n");
-
-				var usersList = contacts.Users.OfType<TLUser>().ToList();
 
 				Console.WriteLine($"Writing to: {fileName}");
 				using (var file = File.Create(fileName))
@@ -146,7 +192,7 @@ namespace ExportTelegramContacts
 					{
 						if (dontExport)
 						{
-							if (string.IsNullOrWhiteSpace(user.Phone))
+							if (string.IsNullOrWhiteSpace(user.phone))
 								continue;
 						}
 
@@ -154,11 +200,11 @@ namespace ExportTelegramContacts
 						stringWrite.WriteLine("BEGIN:VCARD");
 						stringWrite.WriteLine("VERSION:2.1");
 						//Name
-						stringWrite.WriteLine("N:" + user.LastName + ";" + user.FirstName);
+						stringWrite.WriteLine("N:" + user.last_name + ";" + user.first_name);
 						//Full Name
-						stringWrite.WriteLine("FN:" + user.FirstName + " " +
-											 /* nameMiddle + " " +*/ user.LastName);
-						stringWrite.WriteLine("TEL;CELL:" + ConvertFromTelegramPhoneNumber(user.Phone));
+						stringWrite.WriteLine("FN:" + user.first_name + " " +
+											 /* nameMiddle + " " +*/ user.last_name);
+						stringWrite.WriteLine("TEL;CELL:" + ConvertFromTelegramPhoneNumber(user.phone));
 
 						//vCard End
 						stringWrite.WriteLine("END:VCARD");
@@ -183,53 +229,44 @@ namespace ExportTelegramContacts
 					using (var file = File.Create(fileNameWihContacts))
 					using (var stringWrite = new StreamWriter(file))
 					{
-
-
 						var savedCount = 0;
 						foreach (var user in usersList)
 						{
 							if (dontExport)
 							{
-								if (string.IsNullOrWhiteSpace(user.Phone))
+								if (string.IsNullOrWhiteSpace(user.phone))
 									continue;
 							}
 
 							string userPhotoString = null;
 							try
 							{
-								var userPhoto = user.Photo as TLUserProfilePhoto;
-								if (userPhoto != null)
+								if (user.photo is UserProfilePhoto)
 								{
-									var photo = userPhoto.PhotoBig as TLFileLocation;
-									if (saveSmallImages)
-										photo = userPhoto.PhotoSmall as TLFileLocation;
+									var displayName = user.first_name + " " + user.last_name;
+									if (string.IsNullOrWhiteSpace(displayName))
+										displayName = user.username;
 
-									if (photo != null)
+									Console.Write($"Reading profile image for: {displayName}...");
+
+									var photoBytes = await GetProfilePhoto(_client, user, big: !saveSmallImages);
+
+									if (photoBytes != null && photoBytes.Length > 0)
 									{
-										var displayName = user.FirstName + " " + user.LastName;
-										if (string.IsNullOrWhiteSpace(displayName))
-											displayName = user.Username;
-
-										Console.Write($"Reading prfile image for: {displayName}...");
-
-										var smallPhotoBytes = await GetFile(_client,
-											new TLInputFileLocation()
-											{
-												LocalId = photo.LocalId,
-												Secret = photo.Secret,
-												VolumeId = photo.VolumeId
-											});
-
 										// resize if it is the big image
 										if (!saveSmallImages)
 										{
 											Console.Write("Resizing...");
-											smallPhotoBytes = ResizeProfileImage(ref smallPhotoBytes);
+											photoBytes = ResizeProfileImage(photoBytes);
 										}
 
-										userPhotoString = Convert.ToBase64String(smallPhotoBytes);
+										userPhotoString = Convert.ToBase64String(photoBytes);
 
 										Console.WriteLine("Done");
+									}
+									else
+									{
+										Console.WriteLine("No photo");
 									}
 								}
 							}
@@ -238,22 +275,18 @@ namespace ExportTelegramContacts
 								Console.WriteLine("Failed due " + e.Message);
 							}
 
-
-							//System.IO.StringWriter stringWrite = new System.IO.StringWriter();
-							//create an htmltextwriter which uses the stringwriter
-
 							//vCard Begin
 							stringWrite.WriteLine("BEGIN:VCARD");
 							stringWrite.WriteLine("VERSION:2.1");
 							//Name
-							if (string.IsNullOrEmpty(user.LastName) && string.IsNullOrEmpty(user.FirstName))
-								stringWrite.WriteLine("N:" + user.Username + ";");
+							if (string.IsNullOrEmpty(user.last_name) && string.IsNullOrEmpty(user.first_name))
+								stringWrite.WriteLine("N:" + user.username + ";");
 							else
-								stringWrite.WriteLine("N:" + user.LastName + ";" + user.FirstName);
+								stringWrite.WriteLine("N:" + user.last_name + ";" + user.first_name);
 							//Full Name
-							stringWrite.WriteLine("FN:" + user.FirstName + " " +
-												  /* nameMiddle + " " +*/ user.LastName);
-							stringWrite.WriteLine("TEL;CELL:" + ConvertFromTelegramPhoneNumber(user.Phone));
+							stringWrite.WriteLine("FN:" + user.first_name + " " +
+												  /* nameMiddle + " " +*/ user.last_name);
+							stringWrite.WriteLine("TEL;CELL:" + ConvertFromTelegramPhoneNumber(user.phone));
 
 							if (userPhotoString != null)
 							{
@@ -262,7 +295,6 @@ namespace ExportTelegramContacts
 								stringWrite.WriteLine(string.Empty);
 							}
 
-
 							//vCard End
 							stringWrite.WriteLine("END:VCARD");
 
@@ -270,7 +302,6 @@ namespace ExportTelegramContacts
 						}
 						Console.WriteLine($"Total number of contacts with images saved: {savedCount}");
 						Console.WriteLine();
-
 					}
 				}
 			}
@@ -281,37 +312,21 @@ namespace ExportTelegramContacts
 			}
 		}
 
-		private static async Task<byte[]> GetFile(TelegramClient client, TLInputFileLocation file)
+		/// <summary>
+		/// Downloads a user's profile photo using WTelegramClient's built-in helper,
+		/// which takes care of locating the right datacenter and file location.
+		/// </summary>
+		private static async Task<byte[]> GetProfilePhoto(Client client, User user, bool big)
 		{
-			int filePart = 512 * 1024;
-			int offset = 0;
 			using (var mem = new MemoryStream())
 			{
-				while (true)
-				{
-					if (!client.IsConnected)
-					{
-						await client.ConnectAsync(true);
-					}
-					var resFile = await client.GetFile(
-						file,
-						filePart, offset);
+				var type = await client.DownloadProfilePhotoAsync(user, mem, big);
+				if (type == Storage_FileType.unknown || mem.Length == 0)
+					return null;
 
-					mem.Write(resFile.Bytes, 0, resFile.Bytes.Length);
-					offset += filePart;
-					var readCount = resFile.Bytes.Length;
-
-#if DEBUG
-					Console.Write($" ... read {readCount} of {filePart} .");
-#endif
-					if (readCount < filePart)
-						break;
-				}
 				return mem.ToArray();
 			}
 		}
-
-
 
 		public static string ConvertFromTelegramPhoneNumber(string number)
 		{
@@ -324,126 +339,63 @@ namespace ExportTelegramContacts
 			return "+" + number;
 		}
 
-
 		private static async Task CallAuthenicate()
 		{
 			Console.Write("Please enter your mobile number (e.g: 14155552671): ");
-			var phoneNumber = Console.ReadLine();
+			_phoneNumber = Console.ReadLine();
 
-			string requestHash;
-			try
+			const int maxAttempts = 5;
+			for (var attempt = 1; attempt <= maxAttempts; attempt++)
 			{
-				requestHash = await _client.SendCodeRequestAsync(phoneNumber);
-			}
-			catch (Exception ex)
-			{
-				Console.WriteLine(ex.Message);
-				Console.ReadKey(intercept: true);
-				return;
-			}
-			Console.Write("Request is sent to your mobile or the telegram app associated with this number, please enter the code here: ");
-			var authCode = Console.ReadLine();
-
-			try
-			{
-				_user = await _client.MakeAuthAsync(phoneNumber, requestHash, authCode);
-
-				Console.WriteLine($"Authenicaion was successfull for Person Name:{_user.FirstName + " " + _user.LastName}, Username={_user.Username}");
-
-#if DEBUG
-				File.Copy("session.dat", "session.backup-copy.dat", true);
-#endif
-
-			}
-			catch (Exception ex)
-			{
-				Console.WriteLine(ex.Message);
-				return;
-			}
-		}
-
-		private static byte[] ResizeProfileImage(ref byte[] imageBytes)
-		{
-			int vcarImageSize = 300;
-			int vcarImageQuality = 70;
-
-			using (var imgMem = new MemoryStream(imageBytes))
-			using (var img = Image.FromStream(imgMem))
-			{
-				using (var mediumImageStream = new MemoryStream())
-				using (var mediumImage = ResizeImage(
-					img,
-					vcarImageSize,
-					vcarImageSize))
+				try
 				{
-					var jpegCodec = JpegEncodingCodec;
-					var jpegQuality = GetQualityParameter(vcarImageQuality);
+					// WTelegramClient drives the whole login flow (code, 2FA password, etc.)
+					// through the Config callback; LoginUserIfNeeded() returns the logged in user.
+					_self = await _client.LoginUserIfNeeded();
 
-					mediumImage.Save(mediumImageStream, jpegCodec, jpegQuality);
-
-					// the new image should be smaller than the original one
-					if (mediumImageStream.Length > imageBytes.Length)
+					Console.WriteLine($"Authenicaion was successfull for Person Name:{_self.first_name + " " + _self.last_name}, Username={_self.username}");
+					break;
+				}
+				catch (Exception ex)
+				{
+					Console.WriteLine($"Attempt {attempt}/{maxAttempts} failed: {ex.Message}");
+					if (attempt == maxAttempts)
 					{
-						return imageBytes;
+						Console.WriteLine("All attempts failed. Check your internet connection / try a VPN, or remove session.dat and retry.");
+						Console.ReadKey(intercept: true);
+						return;
 					}
-					else
-					{
-						return mediumImageStream.ToArray();
-					}
+					await Task.Delay(2000 * attempt);
 				}
 			}
 		}
 
-
-		private static Image ResizeImage(Image image, int maxWidth, int maxHeight)
+		private static byte[] ResizeProfileImage(byte[] imageBytes)
 		{
-			var ratioX = (double)maxWidth / image.Width;
-			var ratioY = (double)maxHeight / image.Height;
-			var ratio = Math.Min(ratioX, ratioY);
+			const int vcardImageSize = 300;
+			const int vcardImageQuality = 70;
 
-			var newWidth = (int)(image.Width * ratio);
-			var newHeight = (int)(image.Height * ratio);
-
-			var newImage = new Bitmap(newWidth, newHeight);
-
-			using (var graphics = Graphics.FromImage(newImage))
-				graphics.DrawImage(image, 0, 0, newWidth, newHeight);
-
-			return newImage;
-		}
-
-
-		private static EncoderParameters GetQualityParameter(int quality)
-		{
-			// Encoder parameter for image quality 
-			var qualityParam = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, quality);
-
-			// JPEG image codec 
-			var encoderParams = new EncoderParameters(1)
+			using (var imgMem = new MemoryStream(imageBytes))
+			using (var img = SixLabors.ImageSharp.Image.Load(imgMem))
 			{
-				Param = { [0] = qualityParam }
-			};
+				img.Mutate(x => x.Resize(new ResizeOptions
+				{
+					Mode = ResizeMode.Max,
+					Size = new Size(vcardImageSize, vcardImageSize)
+				}));
 
-			return encoderParams;
-		}
+				using (var mediumImageStream = new MemoryStream())
+				{
+					var encoder = new JpegEncoder { Quality = vcardImageQuality };
+					img.Save(mediumImageStream, encoder);
 
-		private static ImageCodecInfo _jpegEncodingCodec;
-		private static ImageCodecInfo JpegEncodingCodec => _jpegEncodingCodec ?? (_jpegEncodingCodec = GetEncoderInfo("image/jpeg"));
+					// the new image should be smaller than the original one
+					if (mediumImageStream.Length > imageBytes.Length)
+						return imageBytes;
 
-		/// <summary> 
-		/// Returns the image codec with the given mime type 
-		/// </summary> 
-		private static ImageCodecInfo GetEncoderInfo(string mimeType)
-		{
-			// Get image codecs for all image formats 
-			var codecs = ImageCodecInfo.GetImageEncoders();
-
-			// Find the correct image codec 
-			for (int i = 0; i < codecs.Length; i++)
-				if (codecs[i].MimeType == mimeType)
-					return codecs[i];
-
-			return null;
+					return mediumImageStream.ToArray();
+				}
+			}
 		}
 	}
 }

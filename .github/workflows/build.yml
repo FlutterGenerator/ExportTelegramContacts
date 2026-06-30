@@ -1,0 +1,38 @@
+name: Build
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    env:
+      Solution_Path: ExportTelegramContacts.sln
+      Configuration: Release
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v3
+
+      - name: Setup NuGet
+        uses: NuGet/setup-nuget@v4
+
+      - name: Restore NuGet packages
+        run: nuget restore ${{ env.Solution_Path }}
+
+      - name: Build
+        run: msbuild ${{ env.Solution_Path }} /p:Configuration=${{ env.Configuration }} /p:Platform="Any CPU"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ExportTelegramContacts-${{ env.Configuration }}
+          path: ExportTelegramContacts/bin/${{ env.Configuration }}/**
