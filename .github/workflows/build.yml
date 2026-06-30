@@ -5,12 +5,14 @@ on:
     tags:
       - "*"
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
 
     env:
-      Solution_Path: ExportTelegramContacts.sln
       Configuration: Release
 
     steps:
@@ -18,47 +20,28 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup MSBuild
-        uses: microsoft/setup-msbuild@v2
+        uses: microsoft/setup-msbuild@v3
 
       - name: Setup NuGet
-        uses: NuGet/setup-nuget@v2
+        uses: NuGet/setup-nuget@v4
 
-      - name: Restore NuGet packages
-        run: nuget restore ${{ env.Solution_Path }}
+      - name: Restore NuGet
+        run: nuget restore ExportTelegramContacts.sln
 
-      # ===== Build solution =====
-      - name: Build solution
-        run: msbuild ${{ env.Solution_Path }} /p:Configuration=${{ env.Configuration }} /p:Platform="Any CPU"
+      - name: Build
+        run: msbuild ExportTelegramContacts.sln /p:Configuration=Release /p:Platform="Any CPU"
 
-      # ===== Create Portable ZIP =====
-      - name: Create Portable ZIP
+      - name: Create ZIP
         run: |
           powershell Compress-Archive `
-            -Path ExportTelegramContacts/bin/${{ env.Configuration }}/* `
-            -DestinationPath ExportTelegramContacts-portable.zip
+          -Path ExportTelegramContacts/bin/Release/* `
+          -DestinationPath portable.zip
 
-      # ===== Locate MSI =====
-      - name: Find MSI
-        id: find_msi
-        run: |
-          $msi = Get-ChildItem -Path . -Recurse -Filter *.msi | Select-Object -First 1
-          echo "MSI_PATH=$($msi.FullName)" >> $env:GITHUB_ENV
-
-      # ===== Upload artifacts =====
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-output
-          path: |
-            ExportTelegramContacts-portable.zip
-            ${{ env.MSI_PATH }}
-
-      # ===== Create GitHub Release =====
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
-            ExportTelegramContacts-portable.zip
-            ${{ env.MSI_PATH }}
+            portable.zip
+            ExportTelegramContacts/bin/Release/*.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
