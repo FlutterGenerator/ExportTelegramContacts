@@ -1,11 +1,9 @@
-name: Build
+name: Build & Release
 
 on:
   push:
-    branches: [ "master" ]
-  pull_request:
-    branches: [ "master" ]
-  workflow_dispatch:
+    tags:
+      - "*"
 
 jobs:
   build:
@@ -17,22 +15,50 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Setup MSBuild
-        uses: microsoft/setup-msbuild@v3
+        uses: microsoft/setup-msbuild@v2
 
       - name: Setup NuGet
-        uses: NuGet/setup-nuget@v4
+        uses: NuGet/setup-nuget@v2
 
       - name: Restore NuGet packages
         run: nuget restore ${{ env.Solution_Path }}
 
-      - name: Build
+      # ===== Build solution =====
+      - name: Build solution
         run: msbuild ${{ env.Solution_Path }} /p:Configuration=${{ env.Configuration }} /p:Platform="Any CPU"
 
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v7
+      # ===== Create Portable ZIP =====
+      - name: Create Portable ZIP
+        run: |
+          powershell Compress-Archive `
+            -Path ExportTelegramContacts/bin/${{ env.Configuration }}/* `
+            -DestinationPath ExportTelegramContacts-portable.zip
+
+      # ===== Locate MSI =====
+      - name: Find MSI
+        id: find_msi
+        run: |
+          $msi = Get-ChildItem -Path . -Recurse -Filter *.msi | Select-Object -First 1
+          echo "MSI_PATH=$($msi.FullName)" >> $env:GITHUB_ENV
+
+      # ===== Upload artifacts =====
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
         with:
-          name: ExportTelegramContacts-${{ env.Configuration }}
-          path: ExportTelegramContacts/bin/${{ env.Configuration }}/**
+          name: build-output
+          path: |
+            ExportTelegramContacts-portable.zip
+            ${{ env.MSI_PATH }}
+
+      # ===== Create GitHub Release =====
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ExportTelegramContacts-portable.zip
+            ${{ env.MSI_PATH }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
